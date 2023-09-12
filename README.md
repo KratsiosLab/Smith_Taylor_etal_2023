@@ -6,5 +6,3 @@ The acr2_lin39_example_analysis script covers the initial steps of data processi
 The plotting and differential expression script has code for generating many of the plots in the figures and calculating DE genes between subtypes within anatomical classes.
 The Thresholding script has the code for thresholding the data and for generating the dotplots (neuropeptide/TF figures) and the VD vs DD comparison, as well as identifying genes that are restricted to specific classes/subtypes, etc.
 The Analyzing mouse spinal cord data script has the script for working with the data from the Gitler lab.
-
-These scripts 
