@@ -1,0 +1,741 @@
+get.gene.id.m3 <- function(symbol, cds = NULL, fData.df = NULL) {
+    if (is.null(fData.df))
+        fData.df = rowData(cds)
+    gene.id = as.character(fData.df[fData.df$gene_short_name == symbol, "id"])
+    return(gene.id)
+}
+
+plot_genes_jitter <- function (cds, gene, grouping = "State", min_expr = NULL, cell_size = 0.75, 
+          nrow = NULL, ncol = 1, panel_order = NULL, color_by = NULL, 
+          plot_trend = FALSE, label_by_short_name = TRUE, relative_expr = TRUE) 
+  {
+  cds_subset <- cds[get.gene.id.m3(gene, cds),]
+  
+  integer_expression <- TRUE
+  relative_expression <- FALSE
+
+  if (integer_expression) {
+    cds_exprs <- cds_subset@assays@data$counts
+    if (relative_expr) {
+      if (is.null(size_factors(cds_subset))) {
+        stop("Error: to call this function with relative_expr=TRUE, you must call estimateSizeFactors() first")
+      }
+      cds_exprs <- Matrix::t(Matrix::t(cds_exprs)/size_factors(cds_subset))
+    }
+    cds_exprs <- reshape2::melt(round(as.matrix(cds_exprs)))
+  }
+  else {
+    cds_exprs <- cds_subset@assays@data$counts
+    cds_exprs <- reshape2::melt(as.matrix(cds_exprs))
+  }
+  if (is.null(min_expr)) {
+    min_expr <- 0.1
+  }
+  colnames(cds_exprs) <- c("f_id", "Cell", "expression")
+  cds_exprs$expression[cds_exprs$expression < min_expr] <- min_expr
+  cds_pData <- as.data.frame(colData(cds_subset))
+  cds_fData <- as.data.frame(rowData(cds_subset))
+  cds_exprs <- as.data.frame(cds_exprs)
+  cds_exprs <- merge(cds_exprs, cds_fData, by.x = "f_id", by.y = "row.names")
+  cds_exprs <- merge(cds_exprs, cds_pData, by.x = "Cell", by.y = "row.names")
+  cds_exprs$adjusted_expression <- log10(cds_exprs$expression)
+  if (label_by_short_name == TRUE) {
+    if (is.null(cds_exprs$gene_short_name) == FALSE) {
+      cds_exprs$feature_label <- cds_exprs$gene_short_name
+      cds_exprs$feature_label[is.na(cds_exprs$feature_label)] <- cds_exprs$f_id
+    }
+    else {
+      cds_exprs$feature_label <- cds_exprs$f_id
+    }
+  }
+  else {
+    cds_exprs$feature_label <- cds_exprs$f_id
+  }
+  if (is.null(panel_order) == FALSE) {
+    cds_exprs$feature_label <- factor(cds_exprs$feature_label, 
+                                      levels = panel_order)
+  }
+  q <- ggplot(aes_string(x = grouping, y = "expression"), data = cds_exprs)
+  if (is.null(color_by) == FALSE) {
+    q <- q + geom_jitter(aes_string(color = color_by), size = I(cell_size))
+  }
+  else {
+    q <- q + geom_jitter(size = I(cell_size))
+  }
+  if (plot_trend == TRUE) {
+    q <- q + stat_summary(aes_string(color = color_by), fun.data = "mean_cl_boot", 
+                          size = 0.35)
+    q <- q + stat_summary(aes_string(x = grouping, y = "expression", 
+                                     color = color_by, group = color_by), fun.data = "mean_cl_boot", 
+                          size = 0.35, geom = "line")
+  }
+  q <- q + scale_y_log10() + facet_wrap(~feature_label, nrow = nrow, 
+                                        ncol = ncol, scales = "free_y")
+  if (min_expr < 1) {
+    q <- q + expand_limits(y = c(min_expr, 1))
+  }
+  q <- q + ylab("Expression") + xlab(grouping)
+  q <- q + monocle3:::monocle_theme_opts() + theme(axis.text.x = element_text(angle = 45, hjust=1))
+  q 
+}
+
+
+plot.cell.type.m3 <- function(cds, type) {
+  as.data.frame(colData(cds)) %>% 
+  mutate(Neuron = ifelse(Cell.type == type, T, F)) %>%
+  ggplot(.,aes(x = UMAP_1, y = UMAP_2)) + geom_point(aes(color = Neuron), size = 0.5)  + theme(legend.position = "none") + scale_color_manual(values = c("#595959", "red")) + ggtitle(type)
+}
+
+plot.cell.type.PHATE <- function(cds, type) {
+  as.data.frame(colData(cds)) %>% 
+  mutate(Neuron = ifelse(Cell.type == type, T, F)) %>%
+  ggplot(.,aes(x = PHATE_1, y = PHATE_2)) + geom_point(aes(color = Neuron), size = 0.5)  + theme(legend.position = "none") + scale_color_manual(values = c("#595959", "red")) + ggtitle(type)
+}
+
+plot.expr.UMAP <- function(cds, gene_short_name, coexpr_gene = NULL, ncol = NULL,
+                     size = NULL, stroke = NULL,
+                     color.pal = c("grey85", "blue", "purple", "red")) {
+    colData <- as.data.frame(colData(cds))
+    if (!is.null(coexpr_gene)) {
+        
+        gene.1 = gene_short_name
+        gene.2 = coexpr_gene
+        
+        gene.1.id = get.gene.id.m3(gene.1, cds)
+        gene.2.id = get.gene.id.m3(gene.2, cds)
+
+        colData$tmp.1 = cds@assays@data$counts[gene.1.id,]
+        colData$tmp.2 = cds@assays@data$counts[gene.2.id,]
+        
+        if (is.null(size)) size = 0.1
+        if (is.null(stroke)) stroke = 0.4
+
+        plot = ggplot(colData, aes(x = UMAP_1, y = UMAP_2,
+                                      color = log2(pmin(tmp.1, tmp.2) / Size_Factor + 1),
+                                      alpha = tmp.1 > 0 & tmp.2 > 0)) +
+            geom_point(size = size, stroke = stroke) +
+            scale_color_gradientn(colors = color.pal) +
+            scale_alpha_manual(values = c(1.0/3.0, 1.0)) +
+            guides(alpha = F, color = guide_colorbar(
+                title = paste("min(", gene.1, ", ", gene.2, ")", "\nnormalized\nlog2 expression", sep = ""))) +
+            monocle3:::monocle_theme_opts()
+
+        colData$tmp.1 = NULL
+        colData$tmp.2 = NULL
+        return(plot)
+    }
+    
+    if (length(nchar(gene_short_name)) == 1) {
+        gene.id = get.gene.id.m3(gene_short_name, cds)
+        colData$tmp.expr = cds@assays@data$counts[gene.id,]
+        
+        if (is.null(size)) size = 0.1
+        if (is.null(stroke)) stroke = 0.4
+
+        plot = ggplot(colData, aes(x = UMAP_1, y = UMAP_2,
+                                      color = log2(tmp.expr / Size_Factor + 1),
+                                      alpha = tmp.expr > 0)) +
+            geom_point(size = size, stroke = stroke) +
+            scale_color_gradientn(colors = color.pal) +
+            scale_alpha_manual(values = c(1.0/3.0, 1.0)) +
+            guides(alpha = F,
+                   color = guide_colorbar(title = paste(gene_short_name, "\nnormalized\nlog2 expression", sep = ""))) +
+            monocle3:::monocle_theme_opts()
+
+        colData$tmp.expr = NULL
+        return(plot)
+    } else {
+        tmp.df = colData[, c("cell", "UMAP_1", "UMAP_2")]
+        gene.ids = sapply(gene_short_name, function(x) get.gene.id.m3(x, cds))
+        gene.sanitized.name = sub("-", ".", gene_short_name)
+
+        for (i in 1:length(gene_short_name))
+            tmp.df[, gene.sanitized.name[i]] = cds@assays@data$counts[gene.ids[i],] / colData$Size_Factor
+            
+        tmp.df = melt(tmp.df, id.vars = c("cell", "UMAP_1", "UMAP_2"))
+            
+        if (is.null(size)) size = 0.1
+        if (is.null(stroke)) stroke = 0.2
+            
+        plot = ggplot(tmp.df, aes(x = UMAP_1, y = UMAP_2, color = log2(value+1),
+                                  alpha = value > 0)) +
+            facet_wrap(~ variable, ncol = ncol) +
+            geom_point(size = size, stroke = stroke) +
+            scale_color_gradientn(colors = color.pal) +
+            scale_alpha_manual(values = c(1.0/3.0, 1.0)) +
+            guides(alpha = F) +
+            monocle3:::monocle_theme_opts()
+            
+        return(plot)
+    }
+}
+
+plot.expr.PHATE <- function(cds, gene_short_name, coexpr_gene = NULL, ncol = NULL,
+                     size = NULL, stroke = NULL,
+                     color.pal = c("grey85", "blue", "purple", "red")) {
+    colData <- as.data.frame(colData(cds))
+    if (!is.null(coexpr_gene)) {
+        
+        gene.1 = gene_short_name
+        gene.2 = coexpr_gene
+        
+        gene.1.id = get.gene.id.m3(gene.1, cds)
+        gene.2.id = get.gene.id.m3(gene.2, cds)
+
+        colData$tmp.1 = cds@assays@data$counts[gene.1.id,]
+        colData$tmp.2 = cds@assays@data$counts[gene.2.id,]
+        
+        if (is.null(size)) size = 0.1
+        if (is.null(stroke)) stroke = 0.4
+
+        plot = ggplot(colData, aes(x = PHATE_1, y = PHATE_2,
+                                      color = log2(pmin(tmp.1, tmp.2) / Size_Factor + 1),
+                                      alpha = tmp.1 > 0 & tmp.2 > 0)) +
+            geom_point(size = size, stroke = stroke) +
+            scale_color_gradientn(colors = color.pal) +
+            scale_alpha_manual(values = c(1.0/3.0, 1.0)) +
+            guides(alpha = F, color = guide_colorbar(
+                title = paste("min(", gene.1, ", ", gene.2, ")", "\nnormalized\nlog2 expression", sep = ""))) +
+            monocle3:::monocle_theme_opts()
+
+        colData$tmp.1 = NULL
+        colData$tmp.2 = NULL
+        return(plot)
+    }
+    
+    if (length(nchar(gene_short_name)) == 1) {
+        gene.id = get.gene.id.m3(gene_short_name, cds)
+        colData$tmp.expr = cds@assays@data$counts[gene.id,]
+        
+        if (is.null(size)) size = 0.1
+        if (is.null(stroke)) stroke = 0.4
+
+        plot = ggplot(colData, aes(x = PHATE_1, y = PHATE_2,
+                                      color = log2(tmp.expr / Size_Factor + 1),
+                                      alpha = tmp.expr > 0)) +
+            geom_point(size = size, stroke = stroke) +
+            scale_color_gradientn(colors = color.pal) +
+            scale_alpha_manual(values = c(1.0/3.0, 1.0)) +
+            guides(alpha = F,
+                   color = guide_colorbar(title = paste(gene_short_name, "\nnormalized\nlog2 expression", sep = ""))) +
+            monocle3:::monocle_theme_opts()
+
+        colData$tmp.expr = NULL
+        return(plot)
+    } else {
+        tmp.df = colData[, c("cell", "UMAP_1", "UMAP_2")]
+        gene.ids = sapply(gene_short_name, function(x) get.gene.id.m3(x, cds))
+        gene.sanitized.name = sub("-", ".", gene_short_name)
+
+        for (i in 1:length(gene_short_name))
+            tmp.df[, gene.sanitized.name[i]] = cds@assays@data$counts[gene.ids[i],] / colData$Size_Factor
+            
+        tmp.df = melt(tmp.df, id.vars = c("cell", "UMAP_1", "UMAP_2"))
+            
+        if (is.null(size)) size = 0.1
+        if (is.null(stroke)) stroke = 0.2
+            
+        plot = ggplot(tmp.df, aes(x = PHATE_1, y = PHATE_2, color = log2(value+1),
+                                  alpha = value > 0)) +
+            facet_wrap(~ variable, ncol = ncol) +
+            geom_point(size = size, stroke = stroke) +
+            scale_color_gradientn(colors = color.pal) +
+            scale_alpha_manual(values = c(1.0/3.0, 1.0)) +
+            guides(alpha = F) +
+            monocle3:::monocle_theme_opts()
+            
+        return(plot)
+    }
+}
+
+assign.neuron.type.m3 <- function(subset.cds, full.cds) {
+  subset.LUT = data.frame(Barcode = colData(subset.cds)$unique.barcode, Cell.type = colData(subset.cds)$Cell.type)
+  full.LUT = data.frame(Barcode = colData(full.cds)$unique.barcode, Cell.type = colData(full.cds)$Cell.type)
+  
+  full.LUT = full.LUT %>% left_join(subset.LUT, by = "Barcode")
+  full.LUT$Cell.type <- ifelse(
+    is.na(full.LUT$Cell.type.y),
+    as.character(full.LUT$Cell.type.x),
+    as.character(full.LUT$Cell.type.y)
+  )
+  full.LUT$Cell.type.x <- NULL
+  full.LUT$Cell.type.y <- NULL
+  full.LUT 
+}
+
+quick.marker <- function(cds, column, value) {
+ cds.subset <- cds
+ 
+ colData(cds.subset)$tmp <- ifelse(
+  colData(cds.subset)$column == value,
+  1,
+  2
+ )
+ 
+ DEG <- top.markers(cds.subset, group_cells_by = "tmp")
+ DEG
+}
+
+get.norm.expr.matrix.m3 <- function(cds) {
+    mat = cds@assays$data$counts
+    mat@x = mat@x / rep.int(colData(cds)$Size_Factor, diff(mat@p))
+    return(mat)
+}
+
+get.avg.expr <- function(gene, cds, dataset) {
+  if(dataset == "liberal")
+    dataset = L4.TPM.lib
+  else if(dataset == "medium")
+    dataset = L4.TPM.med
+  else if(dataset == "conservative")
+    dataset = L4.TPM.cons
+  else if(dataset == "stringent")
+    dataset = L4.TPM.string
+  tmp <- dataset[get.gene.id.m3(gene, cds),]
+  tmp.df <- as.data.frame(tmp)
+  tmp.df <- cbind(cell.type = rownames(tmp.df), expr = tmp.df)
+  colnames(tmp.df) <- c("cell.type", "expr")
+  tmp.df <- tmp.df %>% dplyr::arrange(desc(expr))
+  return(tmp.df)
+}
+
+get.avg.prop <- function(gene, cds) {
+  tmp <- L4.prop[get.gene.id.m3(gene, cds),]
+  tmp.df <- as.data.frame(tmp)
+  tmp.df <- cbind(cell.type = rownames(tmp.df), TPM = tmp.df)
+  colnames(tmp.df) <- c("cell.type", "proportion")
+  tmp.df <- tmp.df %>% dplyr::arrange(desc(proportion))
+  return(tmp.df)
+}
+
+plot.avg.expr <- function(gene,cds, dataset) {
+  if(dataset == "liberal")
+    label = "Liberal Threshold"
+   else if(dataset == "medium")
+    label = "Medium Threshold"
+   else if(dataset == "conservative")
+    label = "Conservative Threshold"
+   else if(dataset == "stringent")
+    label = "Stringent Threshold"
+   else if(dataset == "prop")
+    label = "Proportion of Cells"
+   else if(dataset == "raw")
+    label = "Unthresholded"
+  if(dataset == "liberal")
+    dataset = L4.TPM.lib
+  else if(dataset == "medium")
+    dataset = L4.TPM.med
+  else if(dataset == "conservative")
+    dataset = L4.TPM.cons
+  else if(dataset == "stringent")
+    dataset = L4.TPM.string
+  else if(dataset == "prop")
+    dataset = L4.prop
+  else if(dataset == "raw")
+    dataset = L4.TPM.raw
+  tmp <- dataset[get.gene.id.m3(gene, cds),]
+  tmp.df <- as.data.frame(tmp)
+  tmp.df <- cbind(cell.type = rownames(tmp.df), expr = tmp.df)
+  head(tmp.df)
+  colnames(tmp.df) <- c("cell.type", "expr")
+  tmp.df$Modality <- as.character(vlookup(tmp.df$cell.type, genes.per.neuron.TPM, result_column = "Modality", lookup_column = "neuron.type"))
+  tmp.df$Modality <- factor(tmp.df$Modality, levels = c("Sensory", "Interneuron", "Motor", "Pharyngeal"))
+  tmp.df <- tmp.df %>% dplyr::arrange(desc(expr))
+  tmp.df$cell.type <- factor(tmp.df$cell.type, levels=unique(as.character(tmp.df$cell.type)))
+  g <- ggplot(tmp.df, aes(x = cell.type, y = expr)) + geom_bar(stat = "Identity", aes(fill = Modality)) + theme(axis.text.x = element_text(size = 6, angle = -90,  hjust=0, vjust = 0.5), panel.background = element_blank()) 
+   g <- g + ggtitle(paste(gene, label, sep = " ")) + labs(y = "Normalized Expression", x = "") +
+   scale_fill_manual(values = c("#7CAE00FF", "#F8766DFF", "#00BFC4FF", "#C77CFFFF"))
+  return(g)
+}
+
+plot.prop <- function(gene,cds, dataset) {
+  if(dataset == "liberal")
+    label = "Liberal Threshold"
+   else if(dataset == "medium")
+    label = "Medium Threshold"
+   else if(dataset == "conservative")
+    label = "Conservative Threshold"
+   else if(dataset == "stringent")
+    label = "Stringent Threshold"
+   else if(dataset == "prop")
+    label = "Proportion of Cells"
+  if(dataset == "liberal")
+    dataset = L4.liberal.clean
+  else if(dataset == "medium")
+    dataset = L4.medium.clean
+  else if(dataset == "conservative")
+    dataset = L4.conservative.clean
+  else if(dataset == "stringent")
+    dataset = L4.stringent.clean
+  else if(dataset == "prop")
+    dataset = L4.prop
+  else if(dataset == "TPM")
+    dataset = L4.TPM
+  tmp <- dataset[get.gene.id.m3(gene, cds),]
+  tmp.df <- as.data.frame(tmp)
+  tmp.df <- cbind(cell.type = rownames(tmp.df), expr = tmp.df)
+  head(tmp.df)
+  colnames(tmp.df) <- c("cell.type", "expr")
+  tmp.df <- tmp.df %>% dplyr::arrange(desc(expr))
+  tmp.df$rank <- seq(1,dim(tmp.df)[1], 1)
+  tmp.df$cell.type <- factor(tmp.df$cell.type, levels=unique(as.character(tmp.df$cell.type)))
+  g <- ggplot(tmp.df, aes(x = cell.type, y = expr)) + geom_bar(stat =      "Identity") + theme(axis.text.x = element_text(size = 6, angle = 45,      hjust=1))
+   g <- g + ggtitle(gene) + labs(y = "Proportion of Cells", x = "cell.type")
+   g <- g + monocle3:::monocle_theme_opts() + geom_hline(yintercept = 0.02*max(tmp.df$expr), linetype = "dashed", color = "#F8766D") + geom_hline(yintercept = 0.04*max(tmp.df$expr), linetype = "dashed", color = "#7CAE00") + geom_hline(yintercept = 0.09*max(tmp.df$expr), linetype = "dashed", color = "#00BFC4") + geom_hline(yintercept = 0.15*max(tmp.df$expr), linetype = "dashed", color = "#C77CFF")
+  return(g) 
+}
+
+get.gene.family.expression <- function(gene.ids, exprs.matrix){
+  if(substr(gene.ids[1], 1, 6) != "WBGene"){
+    genes <- s2i(gene.ids, gids)
+  }
+  else if(substr(gene.ids[1], 1, 6) == "WBGene")
+    genes = gene.ids
+  data = exprs.matrix
+    
+  # Generating subsetting data matrices
+  genes.expr <- intersect(genes, rownames(data))
+  gene.mat <- data[genes.expr,]
+  bin.expr <- gene.mat
+  bin.expr[bin.expr > 0] <- 1
+  rownames(bin.expr) <- i2s(rownames(bin.expr), gids)
+  
+  # Generating gene stats per neuron
+  gene.per.neuron <- data.frame(Neuron.type = colnames(gene.mat), n.genes = diff(gene.mat@p))
+  
+  # per gene stats
+  gene.stats <- apply(gene.mat, 1, FUN = function(x){x>0})
+  gene.stats <- gene.stats*1L
+  gene.stats <- data.frame(id = rownames(gene.mat), n.neurons = Matrix::colSums(gene.stats))
+  gene.stats$gene_short_name <- i2s(gene.stats$id, gids)
+  if (threshold == "all.medium") {
+  gene.stats$nUMI <- as.numeric(vlookup(gene.stats$id, gene.abundances.all, result_column = 3, lookup_column = 1))
+  } else {
+  gene.stats$nUMI <- as.numeric(vlookup(gene.stats$id, gene.abundances, result_column = 3, lookup_column = 1))
+  }
+  
+  if (threshold == "all.medium") {
+  gene.stats$num_cells_expressed <- as.numeric(vlookup(gene.stats$id, gene.abundances.all, result_column = 5, lookup_column = 1))
+  } else {
+  gene.stats$num_cells_expressed <- as.numeric(vlookup(gene.stats$id, gene.abundances, result_column = 5, lookup_column = 1))
+  }
+  gene.stats$gene.family <- deparse(substitute(gene.ids))
+  return(list(gene.mat, bin.expr, gene.per.neuron, gene.stats))
+}
+
+get.all.avg.expr <- function(gene, cds, dataset) {
+  if(dataset == "liberal")
+    dataset = L4.all.liberal
+  else if(dataset == "medium")
+    dataset = L4.all.medium
+  else if(dataset == "conservative")
+    dataset = L4.all.conservative
+  else if(dataset == "stringent")
+    dataset = L4.all.stringent
+  tmp <- dataset[get.gene.id.m3(gene, cds),]
+  tmp.df <- as.data.frame(tmp)
+  tmp.df <- cbind(cell.type = rownames(tmp.df), expr = tmp.df)
+  colnames(tmp.df) <- c("cell.type", "expr")
+  tmp.df <- tmp.df %>% dplyr::arrange(desc(expr))
+  return(tmp.df)
+}
+
+plot.avg.expr.non.ordered <- function(gene,cds, dataset) {
+  if(dataset == "liberal")
+    label = "Liberal Threshold"
+   else if(dataset == "medium")
+    label = "Medium Threshold"
+   else if(dataset == "conservative")
+    label = "Conservative Threshold"
+   else if(dataset == "stringent")
+    label = "Stringent Threshold"
+   else if(dataset == "prop")
+    label = "Proportion of Cells"
+  if(dataset == "liberal")
+    dataset = L4.TPM.lib
+  else if(dataset == "medium")
+    dataset = L4.TPM.med
+  else if(dataset == "conservative")
+    dataset = L4.TPM.cons
+  else if(dataset == "stringent")
+    dataset = L4.TPM.string
+  else if(dataset == "prop")
+    dataset = L4.prop.new.medium.mat
+  tmp <- dataset[get.gene.id.m3(gene, cds),]
+  tmp.df <- as.data.frame(tmp)
+  tmp.df <- cbind(cell.type = rownames(tmp.df), expr = tmp.df)
+  head(tmp.df)
+  colnames(tmp.df) <- c("cell.type", "expr")
+  tmp.df$Modality <- as.character(vlookup(tmp.df$cell.type, genes.per.neuron.TPM, result_column = "Modality", lookup_column = "neuron.type"))
+  tmp.df$Modality <- factor(tmp.df$Modality, levels = c("Sensory", "Interneuron", "Motor", "Pharyngeal"))
+    tmp.df$cell.type <- factor(tmp.df$cell.type, levels=ALA.order)
+  g <- ggplot(tmp.df, aes(x = cell.type, y = expr)) + geom_bar(stat = "Identity", aes(fill = Modality)) + theme(axis.text.x = element_text(size = 6, angle = -90,  hjust=0, vjust = 0.5), panel.background = element_blank()) 
+   g <- g + ggtitle(paste(gene, label, sep = " ")) + labs(y = "Normalized Expression", x = "") +
+   scale_fill_manual(values = c("#7CAE00FF", "#F8766DFF", "#00BFC4FF", "#C77CFFFF"))
+  return(g)
+}
+
+diff.test <- function(cds, cell.group, test.group, type.1, type.2, n.genes = 1000) {
+  cds.sub <- cds[, colData(cds)[, cell.group] %in% c(type.1, type.2)]
+  DEG.res <- top_markers(cds.sub, group_cells_by = test.group, genes_to_test_per_group = n.genes,
+  marker_sig_test = TRUE)
+  DEG.res <- DEG.res %>% filter(marker_test_q_value < 0.05) %>% arrange(cell_group, desc(marker_score))
+  DEG.res
+}
+
+plot_dot_by_thresh <- function(stage, neurons = NULL, markers, cluster_rows = TRUE, 
+                               cluster_cols = FALSE,
+                               threshold = 2){
+  if(!stage %in% c("L1", "L4")) {
+    return("Please select either 'L1' or 'L4'")
+  }
+  age <- stage
+  thresh <- threshold
+  data.use <- all.data.thresh.long %>% filter(stage == age)
+  if(!(threshold %in% c(1,2,3,4))){
+    return("Please select a threshold from 1 (most permissive) to 4 (most stringent)")
+  }
+  if(stage == 'L1' & threshold == 1) {expr.mat <- L1.TPM.liberal.mat}
+  if(stage == 'L1' & threshold == 2) {expr.mat <- L1.TPM.medium.mat}
+  if(stage == 'L1' & threshold == 3) {expr.mat <- L1.TPM.conservative.mat}
+  if(stage == 'L1' & threshold == 4) {expr.mat <- L1.TPM.stringent.mat}
+  if(stage == 'L4' & threshold == 1) {expr.mat <- L4.t1}
+  if(stage == 'L4' & threshold == 2) {expr.mat <- L4.t2}
+  if(stage == 'L4' & threshold == 3) {expr.mat <- L4.t3}
+  if(stage == 'L4' & threshold == 4) {expr.mat <- L4.t4}
+ 
+  genes.use <- intersect(wbData::s2i(markers, gids), rownames(expr.mat))
+  genes.missing <- setdiff(wbData::s2i(markers, gids), rownames(expr.mat))
+  if(length(genes.missing) > 0) {
+    for(i in 1:length(genes.missing)){
+      message(paste("The following genes were not detected in the selected dataset:", 
+                    wbData::i2s(genes.missing[i], gids),
+                  sep = " "))
+    }
+  }
+  
+  if(is.null(neurons)){
+    cells.use <- as.character(unique(data.use$cell.type))
+  } else {
+      cells.use <- neurons
+      }
+  
+  possible.L1.cells <- as.character(unique(all.data.thresh.long[which(all.data.thresh.long$stage == "L1"),]$cell.type))
+  possible.L4.cells <- as.character(unique(all.data.thresh.long[which(all.data.thresh.long$stage == "L4"),]$cell.type))
+  L1.only <- setdiff(possible.L1.cells, possible.L4.cells)
+  L4.only <- setdiff(possible.L4.cells, possible.L1.cells)
+  
+  if(length(setdiff(cells.use, possible.L1.cells)) > 0 & age == "L1") {
+    missing.cells <- setdiff(cells.use, possible.L1.cells)
+    for(i in 1:length(missing.cells)) {
+      message(paste("The following cell type(s) are not present in the L1 dataset:", 
+                  missing.cells[i], 
+                  sep = " ", collapse = ", "))
+    }
+  }
+  
+  if(length(setdiff(cells.use, possible.L4.cells)) > 0 & age == "L4") {
+    missing.cells <- setdiff(cells.use, possible.L4.cells)
+    for(i in 1:length(missing.cells)) {
+      message(paste("The following cell type(s) are not present in the L4 dataset:", 
+                  missing.cells[i],
+                  sep = " "))
+    }
+  }
+  
+  cells.use <- intersect(cells.use, as.character(unique(data.use$cell.type)))
+
+  if(cluster_rows == T & cluster_cols == T){
+    ph <- pheatmap(expr.mat[genes.use,], cluster_cols = T, cluster_rows = T, silent = T)
+    gene.order <- ph[["tree_row"]]$order
+    cell.order <- ph[["tree_col"]]$order
+  }
+  if(cluster_rows == T & cluster_cols == F){
+    ph <- pheatmap(expr.mat[genes.use, cells.use], cluster_cols = F, cluster_rows = T, silent = T)
+    gene.order <- ph[["tree_row"]]$order
+    cell.order <- seq(1,length(cells.use), 1)
+  }
+  if(cluster_rows == F & cluster_cols == T){
+    ph <- pheatmap(expr.mat[genes.use, cells.use], cluster_cols = T, cluster_rows = F, silent = T)
+    gene.order <- seq(1,length(genes.use),1)
+    cell.order <- ph[["tree_col"]]$order
+  }
+  if(cluster_rows == F & cluster_cols == F){
+    ph <- pheatmap(expr.mat[genes.use, cells.use], cluster_cols = F, cluster_rows = F, silent = T)
+    gene.order <- seq(1,length(genes.use), 1)
+    cell.order <- seq(1, length(cells.use), 1)
+  }
+  
+  gene.order <- genes.use[gene.order]
+  cell.order <- cells.use[cell.order]
+  genes.use <- wbData::i2s(genes.use, gids)
+  gene.order <- wbData::i2s(gene.order, gids)
+  data.use <- data.use %>% filter(gene_name %in% genes.use & 
+                                    cell.type %in% cells.use
+                                  & threshold == thresh)
+  data.use$gene_name <- factor(data.use$gene_name, levels = gene.order)
+  data.use$cell.type <- factor(data.use$cell.type, levels = cell.order)
+  ggplot(data.use, aes(y = gene_name, x = cell.type)) + 
+    geom_point(aes(color = scaled.expr, size = prop)) +
+    theme(axis.text.x.bottom = element_text(angle = 90, vjust= 0.5, size = 7, hjust = 1),
+          panel.background = element_blank()) + 
+    scale_color_gradientn("Scaled TPM", colors = c("goldenrod1", "darkorange2", "maroon4", "navy")) + 
+    scale_size_continuous(name = "Proportion", limit = c(0.5, 100), range = c(0,5)) + 
+    labs(y = "Gene", x= "Neuron") + theme(panel.grid = element_line(size = 0.25, color = "grey90"),
+                                          legend.key = element_blank())
+}
+
+plot_dot_by_stage <- function(neurons, threshold = 2, markers, cluster_rows = T) {
+  data <- test.data
+  thresh <- threshold
+  genes.use <- intersect(markers, unique(data$gene_name))
+  genes.missing <- setdiff(markers, unique(data$gene_name))
+  if(length(genes.missing) > 0) {
+    for(i in 1:length(genes.missing)){
+      message(paste("The following genes were not detected in the selected dataset:", 
+                    genes.missing[i],
+                    sep = " "))
+    }
+  }
+  
+  possible.L1.cells <- as.character(unique(all.data.thresh.long[which(all.data.thresh.long$stage == "L1"),]$cell.type))
+  possible.L4.cells <- as.character(unique(all.data.thresh.long[which(all.data.thresh.long$stage == "L4"),]$cell.type))
+  L1.only <- setdiff(possible.L1.cells, possible.L4.cells)
+  L4.only <- setdiff(possible.L4.cells, possible.L1.cells)
+  
+  cells.use <- neurons
+  
+  if(length(setdiff(cells.use, possible.L1.cells)) > 0) {
+    missing.cells <- setdiff(cells.use, possible.L1.cells)
+    for(i in 1:length(missing.cells)) {
+      message(paste("The following cell type(s) are not present in the L1 dataset:", 
+                    missing.cells[i], 
+                    "If present at L4, only L4 data will be shown",
+                    sep = " ", collapse = ", "))
+    }
+  }
+  
+  if(length(setdiff(cells.use, possible.L4.cells)) > 0) {
+    missing.cells <- setdiff(cells.use, possible.L4.cells)
+    for(i in 1:length(missing.cells)) {
+      message(paste("The following cell type(s) are not present in the L4 dataset:", 
+                    missing.cells[i],
+                    "If present at L1, only L1 data will be shown",
+                    sep = " "))
+    }
+  }
+  
+  # Clustering by L1 data.
+  
+  if(thresh == 1) {expr.mat <- L1.TPM.liberal.mat}
+  if(thresh == 2) {expr.mat <- L1.TPM.medium.mat}
+  if(thresh == 3) {expr.mat <- L1.TPM.conservative.mat}
+  if(thresh == 4) {expr.mat <- L1.TPM.stringent.mat}
+  
+  data.use <- data %>% filter(cell.type %in% cells.use & 
+                                gene_name %in% genes.use &
+                                threshold == thresh & 
+                                stage == "L1") 
+  
+  L1.genes.use <- intersect(genes.use, 
+                            data.use$gene_name)
+  
+  L1.missing.genes <- setdiff(genes.use, L1.genes.use)
+  
+  clust.mat <- expr.mat[wbData::s2i(L1.genes.use, gids),neurons]
+  clust.mat[clust.mat > 0] <- 1
+  
+  if(cluster_rows == T){
+    ph <- pheatmap(clust.mat, cluster_cols = F, cluster_rows = T, silent = T)
+    gene.order <- ph[["tree_row"]]$order
+  }
+  
+  if(cluster_rows == F){
+    gene.order <- seq(1,length(L1.genes.use),1)
+  }
+  
+  if(length(L1.missing.genes) == 0) {
+    gene.order <- gene.order
+    } else {gene.order <- c(gene.order, 
+                  seq(1+length(L1.genes.use),length(L1.missing.genes) + length(L1.genes.use),1))
+    }
+  
+  gene.order <- genes.use[gene.order]
+  
+  genes.use <- factor(genes.use, levels = gene.order)
+  
+  data.use <- data %>% filter(cell.type %in% cells.use & 
+                               gene_name %in% genes.use &
+                               threshold == thresh) 
+  
+  data.use$gene_name <- factor(data.use$gene_name, levels = gene.order)
+  
+  ggplot(data.use, aes(y = gene_name, x = cell.type, group = stage)) + 
+    geom_point(aes(color = scaled.expr, size = prop), 
+               position = position_dodge(width = 0.5),
+               stat = "identity") +
+    theme(axis.text.x.bottom = element_text(angle = 45, vjust= 0.5, size = 7, hjust = 1),
+          panel.background = element_blank()) + 
+    scale_color_gradientn("Scaled TPM", colors = c("goldenrod1", "darkorange2", "maroon4", "navy")) + 
+    scale_size_continuous(name = "Proportion", limit = c(0.5, 100), range = c(0,5)) + 
+    labs(y = "Gene", x= "Neuron") + theme(panel.grid = element_line(size = 0.25, color = "grey90"),
+                                          legend.key = element_blank(),
+                                          axis.title.x.bottom = element_text(margin = margin(t=10)))
+}
+
+get.expr.info.by.facet.3 <-   function(cds, colData.column) {
+    cell.assignments = colData(cds)[, colData.column]
+    
+    if (!(class(cell.assignments) %in% c("factor", "integer", "character"))) {
+        message("class(pData(cds)[, colData.column]) must be factor, integer, or character")
+    }
+    
+    if (class(cell.assignments) == "factor") {
+        unique.assignments = levels(cell.assignments)
+    } else {
+        unique.assignments = sort(setdiff(unique(cell.assignments), NA))
+    }
+    
+    norm.expr = exprs(cds)
+    norm.expr@x = norm.expr@x / rep.int(colData(cds)$Size_Factor, diff(norm.expr@p))
+
+    facet.norm.expr = list()
+    for (facet in unique.assignments) {
+        facet.norm.expr[[facet]] = norm.expr[, !is.na(cell.assignments) & cell.assignments == facet]
+    }
+        
+    message("Computing gene expression statistics")
+    
+    norm.means = sapply(unique.assignments, function(facet) {
+        Matrix::rowMeans(facet.norm.expr[[facet]])
+    })
+    
+    tpm = sweep(norm.means, 2, colSums(norm.means), "/") * 1000000
+
+    prop.cells.expr = sapply(unique.assignments, function(facet) {
+        apply(facet.norm.expr[[facet]], 1, function(x) sum(x > 0) / length(x))
+    })
+
+    n.cells = sapply(unique.assignments, function(facet) {
+        apply(facet.norm.expr[[facet]], 1, function(x) sum(x > 0))
+    })
+
+    n.umi = sapply(unique.assignments, function(facet) {
+        Matrix::rowSums(exprs(cds)[, !is.na(cell.assignments) & cell.assignments == facet])
+    })
+    
+    total.n.umi.for.facet = sapply(unique.assignments, function(facet) {
+        sum(colData(cds)$n.umi[!is.na(cell.assignments) & cell.assignments == facet])
+    })
+
+    return(list(
+        tpm = tpm,
+        prop.cells.expr = prop.cells.expr,
+        n.umi = n.umi,
+        n.cells = n.cells,
+        total.n.umi.for.facet = total.n.umi.for.facet,
+        norm.expr = norm.expr,
+        gene.annotations = rowData(cds),
+        facet = colData.column
+    ))
+}
